@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+whisper
+transformers
+torch
+edge-tts
+playsound3
+soundfile
+numpy

@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.mp3
+*.webm
+*.wav
+*.tmp
+whisper/
+.cache/
+weights/
+node_modules/
+.env
