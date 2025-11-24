@@ -27,16 +27,15 @@ let rmsSmoothed = 0;
 let audioCtxSilence = null;
 let analyserSilence = null;
 let silenceThreshold = 0.02; // fallback
-let silenceTimer = null;
 
 const THINK_SECONDS = 15;
-const SILENCE_MS = 6000;   // stop after 6s sustained silence
-const MAX_ANSWER_MS = 90_000; // 90 seconds
+const SILENCE_MS = 6000;
+const MAX_ANSWER_MS = 90_000;
 
-// set avatar image
+// Set avatar image
 avatarImg.src = AVATAR_URL;
 
-// create snico bars
+// Build Snico bars
 function buildSnico(n = 18) {
     snico.innerHTML = "";
     for (let i = 0; i < n; i++) {
@@ -48,109 +47,109 @@ function buildSnico(n = 18) {
 }
 buildSnico(20);
 
-// tiny helper to play server audio which is returned as hex string
+// Convert hex audio → play sound
 function playServerHex(hexStr, onStart = null, onEnd = null) {
     if (!hexStr) { if (onEnd) onEnd(); return; }
     try {
-        // hex->bytes
         const bytes = new Uint8Array(hexStr.match(/.{1,2}/g).map(h => parseInt(h, 16)));
         const blob = new Blob([bytes], { type: "audio/mpeg" });
         const url = URL.createObjectURL(blob);
         const a = new Audio(url);
+
         a.onplay = () => { if (onStart) onStart(); };
         a.onended = () => { if (onEnd) onEnd(); URL.revokeObjectURL(url); };
-        a.play().catch(e => {
-            console.warn("Playback failed:", e);
-            if (onEnd) onEnd();
-        });
+
+        a.play().catch(e => { console.warn("Playback failed:", e); if (onEnd) onEnd(); });
     } catch (e) {
         console.error("playServerHex error", e);
         if (onEnd) onEnd();
     }
 }
 
-// UI: avatar glow & snico animation when speaking
+// ❗ FIXED: Snico animates ONLY when interviewer speaks
 function setInterviewerSpeaking(on) {
-    if (on) avatarWrap.classList.add("avatar-active");
-    else avatarWrap.classList.remove("avatar-active");
-    // animate snico bars while speaking
     const bars = Array.from(document.querySelectorAll("#snico .bar"));
-    if (!bars.length) return;
+
     if (on) {
-        // ramp heights randomly while speaking
-        const t = setInterval(() => {
+        avatarWrap.classList.add("avatar-active");
+
+        snico._talkInterval = setInterval(() => {
             bars.forEach((b, i) => {
-                const h = 12 + Math.round(Math.random() * (40 + (i % 3) * 10));
-                b.style.height = h + "px";
+                const h = 12 + Math.random() * 40;
+                b.style.height = `${h}px`;
             });
-        }, 140);
-        // store ref to cancel
-        snico._talkingInterval = t;
+        }, 120);
+
     } else {
-        if (snico._talkingInterval) { clearInterval(snico._talkingInterval); snico._talkingInterval = null; }
-        // set muted small bars
-        bars.forEach((b) => b.style.height = "8px");
+        avatarWrap.classList.remove("avatar-active");
+
+        clearInterval(snico._talkInterval);
+        bars.forEach(b => b.style.height = "8px");
     }
 }
 
-// UI: user mic meter and small snico movement while user speaks
+// ❗ FIXED: User meter ONLY updates mic bar — NO Snico movement
 function updateUserVisuals(level) {
-    // level ~ [0..1]
     micFill.style.width = Math.min(100, Math.round(level * 100)) + "%";
-    // subtle snico react
-    const bars = Array.from(document.querySelectorAll("#snico .bar"));
-    bars.forEach((b, idx) => {
-        const x = Math.max(6, Math.round((level * 60) * (0.5 + ((idx % 3) / 3))));
-        b.style.height = `${x}px`;
-    });
 }
 
-// get media (camera+mic)
+// Setup camera + mic
 async function setupMedia() {
     if (masterStream) return;
     statusEl.textContent = "Requesting camera & mic permission…";
+
     try {
-        masterStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: 1280 } });
+        masterStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: { width: 1280 }
+        });
+
         videoEl.srcObject = masterStream;
         audioOnlyStream = new MediaStream(masterStream.getAudioTracks());
         statusEl.textContent = "Ready";
+
         initMeter(audioOnlyStream);
+
     } catch (e) {
-        console.error("getUserMedia failed:", e);
+        console.error("Media error:", e);
         statusEl.textContent = "Allow camera & mic";
-        alert("Please allow camera and microphone access for the interview to work.");
+        alert("Please allow camera and microphone access.");
     }
 }
 
-// init meter (visualization)
+// Mic meter animation (user only)
 function initMeter(stream) {
     try {
         audioCtxMeter = new (window.AudioContext || window.webkitAudioContext)();
         const src = audioCtxMeter.createMediaStreamSource(stream);
         analyserMeter = audioCtxMeter.createAnalyser();
         analyserMeter.fftSize = 1024;
+
         src.connect(analyserMeter);
         meterData = new Uint8Array(analyserMeter.fftSize);
 
         (function drawMeter() {
             analyserMeter.getByteTimeDomainData(meterData);
+
             let sum = 0;
             for (let i = 0; i < meterData.length; i++) {
                 const v = (meterData[i] - 128) / 128;
                 sum += v * v;
             }
             const rms = Math.sqrt(sum / meterData.length);
-            // smoothing
+
             rmsSmoothed = rmsSmoothed * 0.85 + rms * 0.15;
             updateUserVisuals(Math.min(1, rmsSmoothed * 4));
+
             requestAnimationFrame(drawMeter);
         })();
+
     } catch (e) {
-        console.warn("initMeter error:", e);
+        console.warn("Meter error:", e);
     }
 }
 
-// calibrate ambient silence threshold (0.7s sampling)
+// Ambient calibration
 function calibrateAmbient(stream) {
     return new Promise((resolve) => {
         try {
@@ -159,9 +158,11 @@ function calibrateAmbient(stream) {
             const a = ctx.createAnalyser();
             a.fftSize = 1024;
             src.connect(a);
+
             const data = new Uint8Array(a.fftSize);
             const samples = [];
             const start = performance.now();
+
             (function sample() {
                 a.getByteTimeDomainData(data);
                 let sum = 0;
@@ -169,53 +170,55 @@ function calibrateAmbient(stream) {
                     const v = (data[i] - 128) / 128;
                     sum += v * v;
                 }
-                const rms = Math.sqrt(sum / data.length);
-                samples.push(rms);
-                if (performance.now() - start < 700) requestAnimationFrame(sample);
+                samples.push(Math.sqrt(sum / data.length));
+
+                if (performance.now() - start < 700)
+                    requestAnimationFrame(sample);
                 else {
-                    const avg = samples.reduce((s, x) => s + x, 0) / samples.length;
-                    const thresh = Math.max(0.003, avg * 2.2); // a bit above ambient
-                    try { ctx.close(); } catch (e) { }
-                    resolve(thresh);
+                    const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+                    resolve(Math.max(0.003, avg * 2.2));
+                    ctx.close();
                 }
+
             })();
+
         } catch (e) {
-            console.warn("calibrateAmbient fallback", e);
+            console.warn("Ambient fallback:", e);
             resolve(0.02);
         }
     });
 }
 
-// start the overall interview flow
+// Start interview
 async function startInterview() {
     statusEl.textContent = "Contacting server...";
+
     try {
         const res = await fetch(API_BASE + "/api/start", { method: "POST" });
         const j = await res.json();
-        console.log("start response:", j);
 
-        // If server returned interviewer audio, play it; avatar glows while playing
-        const hex = j.ai_audio_b64 || j.ai_audio || null;
-        setInterviewerSpeaking(false);
-        playServerHex(hex,
+        const hex = j.ai_audio_b64 || j.ai_audio;
+        playServerHex(
+            hex,
             () => { setInterviewerSpeaking(true); statusEl.textContent = "Interviewer speaking…"; },
-            async () => {
+            () => {
                 setInterviewerSpeaking(false);
                 statusEl.textContent = "Thinking (15s)…";
-                // after interviewer audio ends, wait THINK then auto-record
                 startThinkingTimer();
             }
         );
+
     } catch (e) {
-        console.error("startInterview error", e);
+        console.error(e);
         statusEl.textContent = "Server unreachable";
     }
 }
 
-// 15s think timer
+// Thinking countdown
 function startThinkingTimer() {
     let t = THINK_SECONDS;
     statusEl.textContent = `Think… ${t}s`;
+
     const iv = setInterval(() => {
         t--;
         if (t > 0) statusEl.textContent = `Think… ${t}s`;
@@ -226,79 +229,61 @@ function startThinkingTimer() {
     }, 1000);
 }
 
-// start auto-record: calibrate, record, watch silence
+// Start recording + silence detection
 async function startRecordingAuto() {
-    if (!audioOnlyStream) {
-        console.warn("no audio stream — cannot record");
-        statusEl.textContent = "No microphone";
-        return;
-    }
+    if (!audioOnlyStream) return;
 
-    // calibrate ambient
     statusEl.textContent = "Calibrating mic…";
-    const threshold = await calibrateAmbient(audioOnlyStream);
-    console.log("calibrated threshold:", threshold);
-    silenceThreshold = threshold;
+    silenceThreshold = await calibrateAmbient(audioOnlyStream);
 
-    // create recorder
     try {
         recorder = new MediaRecorder(audioOnlyStream, { mimeType: "audio/webm" });
-    } catch (e) {
+    } catch {
         recorder = new MediaRecorder(audioOnlyStream);
     }
 
     recordedChunks = [];
-    recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) recordedChunks.push(ev.data); };
+    recorder.ondataavailable = e => recordedChunks.push(e.data);
     recorder.onstop = onRecorderStop;
 
     recorder.start();
     isRecording = true;
     statusEl.textContent = "Recording… (max 90s)";
-    // start silence monitor
+
     startSilenceMonitor(silenceThreshold);
 
-    // enforce max answer length
     setTimeout(() => {
-        if (isRecording) {
-            console.log("max answer timeout reached -> stopping");
-            stopRecordingAuto();
-        }
+        if (isRecording) stopRecordingAuto();
     }, MAX_ANSWER_MS);
 }
 
-// silence monitor: if sustained silence for SILENCE_MS, stop recording
+// Silence detection engine
 function startSilenceMonitor(threshold) {
     try {
         audioCtxSilence = new (window.AudioContext || window.webkitAudioContext)();
         const src = audioCtxSilence.createMediaStreamSource(audioOnlyStream);
         analyserSilence = audioCtxSilence.createAnalyser();
         analyserSilence.fftSize = 2048;
-        src.connect(analyserSilence);
-        const data = new Uint8Array(analyserSilence.fftSize);
 
+        const data = new Uint8Array(analyserSilence.fftSize);
         let silenceStart = null;
 
         (function poll() {
             analyserSilence.getByteTimeDomainData(data);
+
             let sum = 0;
             for (let i = 0; i < data.length; i++) {
                 const v = (data[i] - 128) / 128;
                 sum += v * v;
             }
             const rms = Math.sqrt(sum / data.length);
-            // small smoothing to avoid jitter
             rmsSmoothed = rmsSmoothed * 0.8 + rms * 0.2;
 
-            // debug to console
-            // console.log("silencePoll rms", rmsSmoothed, "threshold", threshold);
-
-            // visual update already handled by meter
             if (rmsSmoothed < threshold) {
                 if (!silenceStart) silenceStart = performance.now();
                 else if (performance.now() - silenceStart >= SILENCE_MS) {
-                    console.log("sustained silence -> stopping record");
                     stopRecordingAuto();
-                    try { audioCtxSilence.close(); } catch (e) { }
+                    audioCtxSilence.close();
                     return;
                 }
             } else {
@@ -306,73 +291,73 @@ function startSilenceMonitor(threshold) {
             }
 
             if (isRecording) requestAnimationFrame(poll);
+
         })();
 
     } catch (e) {
-        console.warn("startSilenceMonitor error", e);
+        console.warn("Silence monitor error:", e);
     }
 }
 
+// Stop recording
 function stopRecordingAuto() {
     if (!recorder || !isRecording) return;
     isRecording = false;
-    try { if (recorder.state === "recording") recorder.stop(); } catch (e) { console.warn("stop recorder error", e); }
+
+    if (recorder.state === "recording") recorder.stop();
     statusEl.textContent = "Processing upload…";
 }
 
-// called when recorder stops: upload blob
+// Upload and play interviewer response
 async function onRecorderStop() {
-    const blob = new Blob(recordedChunks, { type: recordedChunks[0]?.type || "audio/webm" });
-    console.log("Recorded blob:", blob.size, blob.type);
+    const blob = new Blob(recordedChunks, { type: "audio/webm" });
     const fd = new FormData();
     fd.append("audio", blob, "answer.webm");
 
     try {
-        statusEl.textContent = "Uploading…";
         const res = await fetch(API_BASE + "/api/send_audio", { method: "POST", body: fd });
         const j = await res.json();
-        console.log("server /send_audio response:", j);
 
-        // server returns ai_audio_b64 (hex) — play it
         const hex = j.ai_audio_b64 || j.ai_audio;
-        // avatar glow while interviewer speaks
-        playServerHex(hex,
+
+        playServerHex(
+            hex,
             () => { setInterviewerSpeaking(true); statusEl.textContent = "Interviewer speaking…"; },
             () => {
                 setInterviewerSpeaking(false);
-                // continue: if agent expects more questions, schedule next thinking timer
+
                 if (j.expect_more !== false) {
                     statusEl.textContent = "Thinking (15s)…";
                     startThinkingTimer();
                 } else {
                     statusEl.textContent = "Interview complete.";
+                    setInterviewerSpeaking(false);
+                    setTimeout(() => {
+                    alert("🎉 Thank you! The interview is complete.");
+                }, 500);
                 }
             }
         );
 
     } catch (e) {
-        console.error("upload/send_audio failed", e);
+        console.error(e);
         statusEl.textContent = "Upload failed";
     } finally {
-        // cleanup
         recordedChunks = [];
-        try { if (audioCtxSilence) audioCtxSilence.close(); } catch (e) { }
+        if (audioCtxSilence) audioCtxSilence.close();
     }
 }
 
-// end interview (manual)
+// End button
 endBtn.addEventListener("click", () => {
-    // stop recording if active
     if (isRecording) stopRecordingAuto();
     statusEl.textContent = "Interview ended by user.";
-    // optionally notify backend
     fetch(API_BASE + "/api/end", { method: "POST" }).catch(() => { });
 });
 
-// init on load
+// Init
 window.addEventListener("load", async () => {
     statusEl.textContent = "Starting…";
     await setupMedia();
-    // allow UI to settle
     setTimeout(startInterview, 350);
 });
